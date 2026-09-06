@@ -1,9 +1,12 @@
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import { ClientSecretCredential } from "@azure/identity";
 import { ComputeManagementClient } from "@azure/arm-compute";
 import { NetworkManagementClient } from "@azure/arm-network";
 import { ResourceManagementClient } from "@azure/arm-resources";
 import { SubscriptionClient } from "@azure/arm-resources-subscriptions";
+
+const ROOT_SETUP_SCRIPT = readFileSync(new URL("../scripts/configure-root.sh", import.meta.url), "utf8");
 
 export const IMAGE_PRESETS = [
   { id: "ubuntu-24.04", label: "Ubuntu 24.04 LTS", publisher: "Canonical", offer: "ubuntu-24_04-lts", sku: "server", version: "latest" },
@@ -211,7 +214,7 @@ async function configureRootAccess(compute, names, location, rootPassword) {
     names.runCommand,
     {
       location,
-      source: { script: rootSetupScript() },
+      source: { script: ROOT_SETUP_SCRIPT },
       protectedParameters: [{ name: "ROOT_PASSWORD", value: rootPassword }],
       asyncExecution: false,
       treatFailureAsDeploymentFailure: true,
@@ -234,10 +237,6 @@ async function ensureImageAvailable(compute, location, image) {
     error.statusCode = 409;
     throw error;
   }
-}
-
-function rootSetupScript() {
-  return `#!/bin/bash\nset -euo pipefail\nif [ -z "\${ROOT_PASSWORD:-}" ]; then\n  echo 'ROOT_PASSWORD is missing' >&2\n  exit 1\nfi\nprintf 'root:%s\\n' "$ROOT_PASSWORD" | chpasswd\ninstall -d -m 0755 /etc/ssh/sshd_config.d\ncat >/etc/ssh/sshd_config.d/00-azure-vps-starter.conf <<'CFG'\nPermitRootLogin yes\nPasswordAuthentication yes\nCFG\nif command -v sshd >/dev/null 2>&1; then\n  sshd -t\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null\nfi\n`;
 }
 
 function generatePassword() {
