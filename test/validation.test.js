@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { requireCredentials, requireImageId, requireLocation, requireVmSize } from "../src/validation.js";
+import { requireCredentials, requireImageId, requireLocation, requireOperationToken, requireVmSize } from "../src/validation.js";
 
 const valid = {
   tenantId: "11111111-1111-1111-1111-111111111111",
@@ -25,4 +25,11 @@ test("validates provisioning selectors", () => {
   assert.throws(() => requireLocation("../../etc/passwd"));
   assert.throws(() => requireVmSize("bad size"));
   assert.throws(() => requireImageId("unknown", ["debian-12"]));
+});
+
+test("requires a 256-bit hexadecimal operation token", () => {
+  const token = "a1".repeat(32);
+  assert.equal(requireOperationToken(token.toUpperCase()), token);
+  assert.throws(() => requireOperationToken("too-short"), /任务标识/);
+  assert.throws(() => requireOperationToken("z".repeat(64)), /任务标识/);
 });
