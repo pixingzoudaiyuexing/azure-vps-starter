@@ -15,6 +15,8 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run check
       - run: npm run check:sdk
+      - name: Validate root setup script
+        run: bash -n scripts/configure-root.sh
       - name: HTTP smoke test
         shell: bash
         run: |
