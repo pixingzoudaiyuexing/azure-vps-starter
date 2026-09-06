@@ -15,5 +15,27 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run check
       - run: npm run check:sdk
+      - name: HTTP smoke test
+        shell: bash
+        run: |
+          npm start >/tmp/azure-vps-starter.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ready=0
+          for _ in {1..20}; do
+            if curl -fsS http://127.0.0.1:3000/healthz >/tmp/health.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = "1" || { cat /tmp/azure-vps-starter.log; exit 1; }
+          grep -q '"ok":true' /tmp/health.json
+          curl -fsS http://127.0.0.1:3000/ | grep -q 'Azure VPS Starter'
+          headers="$(curl -fsSI http://127.0.0.1:3000/)"
+          if printf '%s\n' "$headers" | grep -qi 'upgrade-insecure-requests'; then
+            echo 'CSP unexpectedly forces HTTP to HTTPS'
+            exit 1
+          fi
       - name: Docker build smoke test
         run: docker build -t azure-vps-starter:ci .
