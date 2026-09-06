@@ -18,6 +18,7 @@ const checks = {
   "subscriptions.get": subscriptions.subscriptions?.get,
   "subscriptions.listLocations": subscriptions.subscriptions?.listLocations,
   "compute.resourceSkus.list": compute.resourceSkus?.list,
+  "compute.usage.list": compute.usage?.list,
   "compute.virtualMachineImages.list": compute.virtualMachineImages?.list,
   "compute.virtualMachines.beginCreateOrUpdate": compute.virtualMachines?.beginCreateOrUpdate,
   "compute.virtualMachineRunCommands.beginCreateOrUpdateAndWait": compute.virtualMachineRunCommands?.beginCreateOrUpdateAndWait,
