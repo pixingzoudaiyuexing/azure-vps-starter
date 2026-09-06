@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Azure VPS Starter</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Azure VPS Starter</p>
+        <h1>输入 API，选地区和型号，直接开机</h1>
+        <p class="sub">凭据仅保存在当前页面内存，不写入浏览器存储或服务端数据库。</p>
+      </div>
+      <span id="apiBadge" class="badge neutral">未验证</span>
+    </header>
+
+    <section class="card">
+      <div class="sectionTitle"><span>1</span><div><h2>Azure API</h2><p>Service Principal 凭据</p></div></div>
+      <div class="grid two">
+        <label>Tenant ID<input id="tenantId" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></label>
+        <label>Client ID<input id="clientId" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></label>
+        <label>Client Secret<input id="clientSecret" type="password" autocomplete="new-password" placeholder="Client Secret" /></label>
+        <label>Subscription ID<input id="subscriptionId" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></label>
+      </div>
+      <div class="actions"><button id="validateBtn" class="primary">检查 API</button><span id="subscriptionInfo" class="muted"></span></div>
+    </section>
+
+    <section id="createCard" class="card disabledCard">
+      <div class="sectionTitle"><span>2</span><div><h2>创建 VPS</h2><p>只显示当前订阅检测到的候选可用规格</p></div></div>
+      <div class="grid two">
+        <label>地区<select id="location" disabled><option value="">先验证 API</option></select></label>
+        <label>型号<select id="vmSize" disabled><option value="">先选择地区</option></select></label>
+        <label>系统<select id="image" disabled></select></label>
+        <label>防火墙<input value="全部入站协议 / 全端口 / 任意来源" disabled /></label>
+      </div>
+      <div id="skuMeta" class="metaBox">验证 API 后开始检测。</div>
+      <div class="warning">此工具会把 Azure NSG 入站规则全部开放到公网。创建出的 VPS 应视为完全暴露在互联网。</div>
+      <div class="actions"><button id="createBtn" class="danger" disabled>创建 VPS</button><span id="createStatus" class="muted"></span></div>
+    </section>
+
+    <section id="resultCard" class="card resultCard hidden">
+      <div class="sectionTitle successTitle"><span>✓</span><div><h2>VPS 创建成功</h2><p>请立即保存登录信息</p></div></div>
+      <div class="resultGrid">
+        <div><small>IP</small><strong id="resultIp">-</strong></div>
+        <div><small>用户</small><strong id="resultUser">root</strong></div>
+        <div><small>密码</small><strong id="resultPassword">-</strong></div>
+        <div><small>型号</small><strong id="resultSize">-</strong></div>
+        <div><small>地区</small><strong id="resultLocation">-</strong></div>
+        <div><small>资源组</small><strong id="resultRg">-</strong></div>
+      </div>
+      <button id="copyBtn" class="primary">复制全部</button>
+    </section>
+
+    <pre id="errorBox" class="errorBox hidden"></pre>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
