@@ -55,11 +55,14 @@ export async function listLocations(credentials) {
 export async function listVmSkus(credentials, location) {
   const { compute } = createAzureClients(credentials);
   const target = location.toLowerCase();
+  const quotaUsage = await getComputeUsage(compute, location);
   const rows = [];
+
   for await (const sku of compute.resourceSkus.list()) {
     if (sku.resourceType !== "virtualMachines" || !sku.name) continue;
     const skuLocations = (sku.locations ?? []).map((item) => item.toLowerCase());
     if (!skuLocations.includes(target)) continue;
+
     const restrictions = (sku.restrictions ?? []).filter((restriction) => {
       if (restriction.type !== "Location") return false;
       const locations = [
@@ -68,19 +71,32 @@ export async function listVmSkus(credentials, location) {
       ].map((item) => item.toLowerCase());
       return locations.length === 0 || locations.includes(target);
     });
+
     const caps = Object.fromEntries((sku.capabilities ?? []).filter((cap) => cap.name).map((cap) => [cap.name, cap.value ?? ""]));
+    const vCpus = numberCapability(caps.vCPUsAvailable ?? caps.vCPUs);
+    const quota = quotaStatus(quotaUsage, sku.family, vCpus);
+    const restrictionReasons = [
+      ...restrictions.map((item) => item.reasonCode ?? item.type ?? "Restricted"),
+      ...quota.reasons,
+    ];
+
     rows.push({
       name: sku.name,
       family: sku.family ?? "",
       tier: sku.tier ?? "",
-      available: restrictions.length === 0,
-      restrictionReasons: [...new Set(restrictions.map((item) => item.reasonCode ?? item.type ?? "Restricted"))],
-      vCpus: numberCapability(caps.vCPUs ?? caps.vCPUsAvailable),
+      available: restrictionReasons.length === 0,
+      restrictionReasons: [...new Set(restrictionReasons)],
+      vCpus,
       memoryGB: numberCapability(caps.MemoryGB),
       maxDataDiskCount: numberCapability(caps.MaxDataDiskCount),
       zones: zoneListForLocation(sku.locationInfo, target),
+      quota: {
+        familyRemaining: quota.familyRemaining,
+        regionalRemaining: quota.regionalRemaining,
+      },
     });
   }
+
   rows.sort((a, b) => {
     if (a.available !== b.available) return a.available ? -1 : 1;
     if ((a.vCpus ?? 0) !== (b.vCpus ?? 0)) return (a.vCpus ?? 0) - (b.vCpus ?? 0);
@@ -237,6 +253,42 @@ async function ensureImageAvailable(compute, location, image) {
     error.statusCode = 409;
     throw error;
   }
+}
+
+async function getComputeUsage(compute, location) {
+  const usage = new Map();
+  try {
+    for await (const item of compute.usage.list(location)) {
+      const key = item.name?.value?.toLowerCase();
+      if (!key) continue;
+      const current = Number(item.currentValue ?? 0);
+      const limit = Number(item.limit ?? 0);
+      if (!Number.isFinite(current) || !Number.isFinite(limit)) continue;
+      usage.set(key, { current, limit, localizedName: item.name?.localizedValue ?? item.name?.value ?? key });
+    }
+  } catch (error) {
+    console.warn(`[azure-vps-starter] unable to read compute quota usage for ${location}: ${error?.code ?? "unknown"}`);
+  }
+  return usage;
+}
+
+function quotaStatus(usage, family, vCpus) {
+  const reasons = [];
+  const required = Number(vCpus ?? 0);
+  const familyQuota = family ? usage.get(family.toLowerCase()) : undefined;
+  const regionalQuota = usage.get("cores") ?? usage.get("totalregionalvcpus");
+  const familyRemaining = remainingQuota(familyQuota);
+  const regionalRemaining = remainingQuota(regionalQuota);
+
+  if (required > 0 && familyRemaining !== null && familyRemaining < required) reasons.push("FamilyQuotaInsufficient");
+  if (required > 0 && regionalRemaining !== null && regionalRemaining < required) reasons.push("RegionalQuotaInsufficient");
+
+  return { reasons, familyRemaining, regionalRemaining };
+}
+
+function remainingQuota(quota) {
+  if (!quota) return null;
+  return Math.max(0, quota.limit - quota.current);
 }
 
 function generatePassword() {
