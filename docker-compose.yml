@@ -4,7 +4,7 @@ services:
     container_name: azure-vps-starter
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       HOST: 0.0.0.0
       PORT: 3000
