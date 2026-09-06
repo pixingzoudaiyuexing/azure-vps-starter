@@ -6,6 +6,20 @@ test("ships expected Linux image presets", () => {
   assert.deepEqual(IMAGE_PRESETS.map((item) => item.id), ["ubuntu-24.04", "ubuntu-22.04", "debian-12"]);
 });
 
+test("all MVP images are x64 Generation 2", () => {
+  for (const image of IMAGE_PRESETS) {
+    assert.equal(image.architecture, "x64");
+    assert.equal(image.generation, "V2");
+  }
+  const ubuntu2404 = IMAGE_PRESETS.find((item) => item.id === "ubuntu-24.04");
+  const ubuntu2204 = IMAGE_PRESETS.find((item) => item.id === "ubuntu-22.04");
+  const debian12 = IMAGE_PRESETS.find((item) => item.id === "debian-12");
+  assert.equal(ubuntu2404.sku, "server");
+  assert.equal(ubuntu2204.offer, "ubuntu-22_04-lts");
+  assert.equal(ubuntu2204.sku, "server");
+  assert.equal(debian12.sku, "12-gen2");
+});
+
 test("maps common Azure capacity failures to Chinese message", () => {
   const result = publicAzureError({ code: "AllocationFailed", statusCode: 409, message: "capacity failed" });
   assert.equal(result.statusCode, 409);
