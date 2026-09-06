@@ -1,4 +1,4 @@
-const GUID_RE = /^[0-9a-fA-F-]{32,36}$/;
+const GUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const LOCATION_RE = /^[a-z0-9-]{2,40}$/i;
 const VM_SIZE_RE = /^[A-Za-z0-9_-]{2,80}$/;
 
