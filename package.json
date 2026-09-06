@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node src/server.js",
     "check": "node --check src/server.js && node --check src/azure.js && node --check src/validation.js && node --check src/sdk-shape-check.js && node --check public/app.js",
-    "check:sdk": "node src/sdk-shape-check.js"
+    "check:sdk": "node src/sdk-shape-check.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@azure/arm-compute": "25.0.0",
