@@ -8,10 +8,12 @@ import { SubscriptionClient } from "@azure/arm-resources-subscriptions";
 
 const ROOT_SETUP_SCRIPT = readFileSync(new URL("../scripts/configure-root.sh", import.meta.url), "utf8");
 
+// MVP deliberately standardizes on x64 + Generation 2 images. Resource SKU
+// discovery filters out Arm64 and Gen1-only VM sizes before they reach the UI.
 export const IMAGE_PRESETS = [
-  { id: "ubuntu-24.04", label: "Ubuntu 24.04 LTS", publisher: "Canonical", offer: "ubuntu-24_04-lts", sku: "server", version: "latest" },
-  { id: "ubuntu-22.04", label: "Ubuntu 22.04 LTS", publisher: "Canonical", offer: "0001-com-ubuntu-server-jammy", sku: "22_04-lts", version: "latest" },
-  { id: "debian-12", label: "Debian 12", publisher: "Debian", offer: "debian-12", sku: "12", version: "latest" },
+  { id: "ubuntu-24.04", label: "Ubuntu 24.04 LTS", publisher: "Canonical", offer: "ubuntu-24_04-lts", sku: "server", version: "latest", architecture: "x64", generation: "V2" },
+  { id: "ubuntu-22.04", label: "Ubuntu 22.04 LTS", publisher: "Canonical", offer: "ubuntu-22_04-lts", sku: "server", version: "latest", architecture: "x64", generation: "V2" },
+  { id: "debian-12", label: "Debian 12", publisher: "Debian", offer: "debian-12", sku: "12-gen2", version: "latest", architecture: "x64", generation: "V2" },
 ];
 
 export function createAzureClients(credentials) {
@@ -75,9 +77,21 @@ export async function listVmSkus(credentials, location) {
     const caps = Object.fromEntries((sku.capabilities ?? []).filter((cap) => cap.name).map((cap) => [cap.name, cap.value ?? ""]));
     const vCpus = numberCapability(caps.vCPUsAvailable ?? caps.vCPUs);
     const quota = quotaStatus(quotaUsage, sku.family, vCpus);
+    const cpuArchitecture = String(caps.CpuArchitectureType ?? "");
+    const hyperVGenerations = String(caps.HyperVGenerations ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    const compatibilityReasons = [];
+
+    if (cpuArchitecture && cpuArchitecture.toLowerCase() !== "x64") {
+      compatibilityReasons.push("ArchitectureUnsupported");
+    }
+    if (hyperVGenerations.length > 0 && !hyperVGenerations.includes("V2")) {
+      compatibilityReasons.push("Generation2Unsupported");
+    }
+
     const restrictionReasons = [
       ...restrictions.map((item) => item.reasonCode ?? item.type ?? "Restricted"),
       ...quota.reasons,
+      ...compatibilityReasons,
     ];
 
     rows.push({
@@ -90,6 +104,8 @@ export async function listVmSkus(credentials, location) {
       memoryGB: numberCapability(caps.MemoryGB),
       maxDataDiskCount: numberCapability(caps.MaxDataDiskCount),
       zones: zoneListForLocation(sku.locationInfo, target),
+      cpuArchitecture: cpuArchitecture || "unknown",
+      hyperVGenerations,
       quota: {
         familyRemaining: quota.familyRemaining,
         regionalRemaining: quota.regionalRemaining,
@@ -106,33 +122,31 @@ export async function listVmSkus(credentials, location) {
   return rows;
 }
 
-export async function createVps({ credentials, location, vmSize, imageId }) {
+export async function createVps({ credentials, location, vmSize, imageId, resourceSuffix, onProgress }) {
   const clients = createAzureClients(credentials);
   const image = IMAGE_PRESETS.find((item) => item.id === imageId);
   if (!image) throw new Error("Unsupported image preset");
 
-  const suffix = crypto.randomBytes(4).toString("hex");
-  const names = {
-    resourceGroup: `avs-${suffix}`,
-    vm: `vps-${suffix}`,
-    vnet: `vnet-${suffix}`,
-    subnet: `subnet-${suffix}`,
-    nsg: `nsg-${suffix}`,
-    publicIp: `pip-${suffix}`,
-    nic: `nic-${suffix}`,
-    runCommand: `configure-root-${suffix}`,
-  };
+  const suffix = resourceSuffix || crypto.randomBytes(6).toString("hex");
+  const names = resourceNames(suffix);
   const rootPassword = generatePassword();
   const bootstrapPassword = generatePassword();
   const adminUsername = "azureadmin";
+  const progress = progressReporter(onProgress, names.resourceGroup);
 
+  progress("image_check", `正在检查 ${image.label} 镜像`);
   await ensureImageAvailable(clients.compute, location, image);
 
   let resourceGroupCreated = false;
   try {
-    await clients.resources.resourceGroups.createOrUpdate(names.resourceGroup, { location });
+    progress("resource_group", `正在创建资源组 ${names.resourceGroup}`);
+    await clients.resources.resourceGroups.createOrUpdate(names.resourceGroup, {
+      location,
+      tags: { "azure-vps-starter": "managed", "azure-vps-starter-status": "creating" },
+    });
     resourceGroupCreated = true;
 
+    progress("nsg", "正在创建全入站开放 NSG");
     const nsg = await clients.network.networkSecurityGroups.beginCreateOrUpdateAndWait(names.resourceGroup, names.nsg, {
       location,
       securityRules: [{
@@ -149,6 +163,7 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
       }],
     });
 
+    progress("vnet", "正在创建 VNet 和 Subnet");
     const vnet = await clients.network.virtualNetworks.beginCreateOrUpdateAndWait(names.resourceGroup, names.vnet, {
       location,
       addressSpace: { addressPrefixes: ["10.30.0.0/16"] },
@@ -157,6 +172,7 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
     const subnet = vnet.subnets?.find((item) => item.name === names.subnet);
     if (!subnet?.id) throw new Error("Azure 未返回 Subnet ID");
 
+    progress("public_ip", "正在申请 Standard Public IPv4");
     const publicIp = await clients.network.publicIPAddresses.beginCreateOrUpdateAndWait(names.resourceGroup, names.publicIp, {
       location,
       publicIPAllocationMethod: "Static",
@@ -166,6 +182,7 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
     if (!publicIp.id) throw new Error("Azure 未返回 Public IP 资源 ID");
     if (!nsg.id) throw new Error("Azure 未返回 NSG ID");
 
+    progress("nic", "正在创建网卡并绑定公网 IP / NSG");
     const nic = await clients.network.networkInterfaces.beginCreateOrUpdateAndWait(names.resourceGroup, names.nic, {
       location,
       networkSecurityGroup: { id: nsg.id },
@@ -178,12 +195,13 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
     });
     if (!nic.id) throw new Error("Azure 未返回 NIC ID");
 
+    progress("vm", `正在创建 ${vmSize} VM`);
     const poller = await clients.compute.virtualMachines.beginCreateOrUpdate(names.resourceGroup, names.vm, {
       location,
       hardwareProfile: { vmSize },
       storageProfile: {
         imageReference: { publisher: image.publisher, offer: image.offer, sku: image.sku, version: image.version },
-        osDisk: { createOption: "FromImage", deleteOption: "Delete", managedDisk: { storageAccountType: "Standard_LRS" } },
+        osDisk: { createOption: "FromImage", deleteOption: "Delete", managedDisk: { storageAccountType: "StandardSSD_LRS" } },
       },
       osProfile: {
         computerName: names.vm,
@@ -192,32 +210,89 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
         linuxConfiguration: { disablePasswordAuthentication: false },
       },
       networkProfile: { networkInterfaces: [{ id: nic.id, primary: true, deleteOption: "Delete" }] },
+      tags: { "azure-vps-starter": "managed" },
     });
     await poller.pollUntilDone();
 
+    progress("root_access", "正在设置 root 密码和 SSH 登录");
     await configureRootAccess(clients.compute, names, location, rootPassword);
 
-    const freshIp = await clients.network.publicIPAddresses.get(names.resourceGroup, names.publicIp);
-    if (!freshIp.ipAddress) throw new Error("VM 已创建，但暂未获得公网 IP");
+    progress("public_ip_wait", "正在读取最终公网 IP");
+    const freshIp = await waitForPublicIp(clients.network, names, 60_000);
 
-    return {
-      resourceGroup: names.resourceGroup,
-      vmName: names.vm,
-      location,
-      vmSize,
-      image: image.label,
-      ip: freshIp.ipAddress,
-      username: "root",
-      password: rootPassword,
-      firewall: "全部入站协议 / 全端口 / 任意来源",
-    };
+    await markResourceGroupReady(clients.resources, names.resourceGroup, location);
+    progress("completed", "VPS 创建完成");
+    return buildResult({ names, location, vmSize, imageLabel: image.label, ip: freshIp, rootPassword });
   } catch (error) {
     if (resourceGroupCreated) {
+      progress("rollback", `创建失败，正在删除资源组 ${names.resourceGroup}`);
       try {
         await clients.resources.resourceGroups.beginDeleteAndWait(names.resourceGroup);
       } catch {
         error.cleanupWarning = `自动清理失败，请登录 Azure Portal 检查并删除资源组 ${names.resourceGroup}，避免产生额外费用。`;
       }
+    }
+    throw error;
+  }
+}
+
+export async function recoverVps({ credentials, resourceSuffix, onProgress }) {
+  const clients = createAzureClients(credentials);
+  const names = resourceNames(resourceSuffix);
+  const progress = progressReporter(onProgress, names.resourceGroup);
+
+  progress("recovery_check", `正在检查资源组 ${names.resourceGroup}`);
+  let group;
+  try {
+    group = await clients.resources.resourceGroups.get(names.resourceGroup);
+  } catch (error) {
+    if (isNotFound(error)) {
+      const missing = new Error(`没有找到上次任务对应的资源组 ${names.resourceGroup}`);
+      missing.code = "RECOVERY_RESOURCE_GROUP_NOT_FOUND";
+      missing.statusCode = 404;
+      throw missing;
+    }
+    throw error;
+  }
+
+  let vm;
+  try {
+    vm = await clients.compute.virtualMachines.get(names.resourceGroup, names.vm);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+    progress("rollback", `检测到未完成资源，正在删除 ${names.resourceGroup}`);
+    await cleanupResourceGroup(clients.resources, names.resourceGroup);
+    const cleaned = new Error(`检测到上次任务只有部分 Azure 资源，已删除资源组 ${names.resourceGroup}。请重新创建 VPS。`);
+    cleaned.code = "RECOVERY_PARTIAL_RESOURCES_CLEANED";
+    cleaned.statusCode = 409;
+    throw cleaned;
+  }
+
+  try {
+    progress("recovery_vm", "检测到 VM，正在等待 Azure 完成配置");
+    vm = await waitForVmProvisioning(clients.compute, names, vm, 5 * 60_000);
+    const rootPassword = generatePassword();
+
+    progress("root_access", "正在重新生成 root 密码并修复 SSH 登录");
+    await configureRootAccess(clients.compute, names, group.location, rootPassword);
+    const ip = await waitForPublicIp(clients.network, names, 60_000);
+    await markResourceGroupReady(clients.resources, names.resourceGroup, group.location);
+
+    return buildResult({
+      names,
+      location: vm.location || group.location,
+      vmSize: vm.hardwareProfile?.vmSize || "unknown",
+      imageLabel: imageLabelFromVm(vm),
+      ip,
+      rootPassword,
+      recovered: true,
+    });
+  } catch (error) {
+    progress("rollback", `恢复失败，正在删除资源组 ${names.resourceGroup}`);
+    try {
+      await cleanupResourceGroup(clients.resources, names.resourceGroup);
+    } catch {
+      error.cleanupWarning = `恢复失败且自动清理失败，请立即登录 Azure Portal 删除资源组 ${names.resourceGroup}。`;
     }
     throw error;
   }
@@ -291,6 +366,101 @@ function remainingQuota(quota) {
   return Math.max(0, quota.limit - quota.current);
 }
 
+function resourceNames(suffix) {
+  return {
+    resourceGroup: `avs-${suffix}`,
+    vm: `vps-${suffix}`,
+    vnet: `vnet-${suffix}`,
+    subnet: `subnet-${suffix}`,
+    nsg: `nsg-${suffix}`,
+    publicIp: `pip-${suffix}`,
+    nic: `nic-${suffix}`,
+    runCommand: `configure-root-${suffix}`,
+  };
+}
+
+function progressReporter(onProgress, resourceGroup) {
+  return (stage, detail) => {
+    try { onProgress?.(stage, detail, { resourceGroup }); } catch { /* progress must never break provisioning */ }
+  };
+}
+
+async function markResourceGroupReady(resources, resourceGroup, location) {
+  try {
+    const current = await resources.resourceGroups.get(resourceGroup);
+    await resources.resourceGroups.createOrUpdate(resourceGroup, {
+      location: current.location || location,
+      tags: { ...(current.tags || {}), "azure-vps-starter": "managed", "azure-vps-starter-status": "ready" },
+    });
+  } catch (error) {
+    console.warn(`[azure-vps-starter] unable to mark resource group ready: ${error?.code ?? "unknown"}`);
+  }
+}
+
+async function cleanupResourceGroup(resources, resourceGroup) {
+  await resources.resourceGroups.beginDeleteAndWait(resourceGroup);
+}
+
+async function waitForVmProvisioning(compute, names, initialVm, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let vm = initialVm;
+  while (Date.now() < deadline) {
+    const state = String(vm.provisioningState || "").toLowerCase();
+    if (state === "succeeded") return vm;
+    if (state === "failed" || state === "canceled") {
+      const error = new Error(`Azure VM provisioning state: ${vm.provisioningState}`);
+      error.code = "VM_PROVISIONING_FAILED";
+      throw error;
+    }
+    await sleep(5000);
+    vm = await compute.virtualMachines.get(names.resourceGroup, names.vm);
+  }
+  const timeout = new Error("等待 Azure VM 完成创建超时");
+  timeout.code = "VM_RECOVERY_TIMEOUT";
+  throw timeout;
+}
+
+async function waitForPublicIp(network, names, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const publicIp = await network.publicIPAddresses.get(names.resourceGroup, names.publicIp);
+    if (publicIp.ipAddress) return publicIp.ipAddress;
+    await sleep(2000);
+  } while (Date.now() < deadline);
+  const error = new Error("VM 已创建，但等待公网 IP 分配超时");
+  error.code = "PUBLIC_IP_TIMEOUT";
+  throw error;
+}
+
+function buildResult({ names, location, vmSize, imageLabel, ip, rootPassword, recovered = false }) {
+  return {
+    resourceGroup: names.resourceGroup,
+    vmName: names.vm,
+    location,
+    vmSize,
+    image: imageLabel,
+    ip,
+    username: "root",
+    password: rootPassword,
+    firewall: "全部入站协议 / 全端口 / 任意来源",
+    recovered,
+  };
+}
+
+function imageLabelFromVm(vm) {
+  const ref = vm.storageProfile?.imageReference;
+  if (!ref) return "Linux";
+  return [ref.publisher, ref.offer, ref.sku].filter(Boolean).join(":");
+}
+
+function isNotFound(error) {
+  return error?.statusCode === 404 || error?.response?.status === 404 || ["ResourceNotFound", "ResourceGroupNotFound"].includes(error?.code);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function generatePassword() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
   let body = "";
@@ -334,6 +504,8 @@ function friendlyMessage(code, fallback) {
     SkuNotAvailable: "该地区当前无法分配所选 VM 型号，请换地区或型号后重试。",
     AllocationFailed: "Azure 当前容量不足，无法分配该型号，请稍后重试或换地区/型号。",
     OperationNotAllowed: "Azure 配额或订阅策略不允许本次创建。",
+    ArchitectureUnsupported: "所选型号的 CPU 架构与当前 x64 系统镜像不兼容。",
+    Generation2Unsupported: "所选型号不支持当前 Generation 2 系统镜像。",
   };
   return messages[code] ?? fallback;
 }
