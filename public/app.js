@@ -113,7 +113,7 @@ async function loadSkus() {
 async function createVps() {
   clearError();
   if (operationInProgress()) {
-    showError(new Error("已有 Azure 创建任务正在执行，请等待当前任务完成。"));
+    showError(new Error("存在尚未解决的 Azure 创建任务，请先等待或恢复当前任务，避免重复创建产生额外费用。"));
     return;
   }
 
@@ -342,7 +342,9 @@ function disableCreator() {
 }
 
 function operationInProgress() {
-  return state.currentOperation?.status === "queued" || state.currentOperation?.status === "running";
+  if (!state.activeOperationToken) return false;
+  if (state.operationMissing || !state.currentOperation) return true;
+  return state.currentOperation.status === "queued" || state.currentOperation.status === "running";
 }
 
 function generateOperationToken() {
