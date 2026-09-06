@@ -20,6 +20,8 @@ const checks = {
   "compute.resourceSkus.list": compute.resourceSkus?.list,
   "compute.virtualMachineImages.list": compute.virtualMachineImages?.list,
   "compute.virtualMachines.beginCreateOrUpdate": compute.virtualMachines?.beginCreateOrUpdate,
+  "compute.virtualMachineRunCommands.beginCreateOrUpdateAndWait": compute.virtualMachineRunCommands?.beginCreateOrUpdateAndWait,
+  "compute.virtualMachineRunCommands.beginDeleteAndWait": compute.virtualMachineRunCommands?.beginDeleteAndWait,
   "network.networkSecurityGroups.beginCreateOrUpdateAndWait": network.networkSecurityGroups?.beginCreateOrUpdateAndWait,
   "network.virtualNetworks.beginCreateOrUpdateAndWait": network.virtualNetworks?.beginCreateOrUpdateAndWait,
   "network.publicIPAddresses.beginCreateOrUpdateAndWait": network.publicIPAddresses?.beginCreateOrUpdateAndWait,
