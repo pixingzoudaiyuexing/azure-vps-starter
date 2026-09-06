@@ -14,7 +14,6 @@ jobs:
           node-version: '22'
       - run: npm install --no-audit --no-fund
       - run: npm run check
-      - name: Azure SDK import smoke test
-        run: node -e "Promise.all(['@azure/identity','@azure/arm-compute','@azure/arm-network','@azure/arm-resources','@azure/arm-resources-subscriptions'].map((m)=>import(m))).then(()=>console.log('Azure SDK imports OK'))"
+      - run: npm run check:sdk
       - name: Docker build smoke test
         run: docker build -t azure-vps-starter:ci .
