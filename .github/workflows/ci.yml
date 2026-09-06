@@ -16,7 +16,9 @@ jobs:
       - run: npm run check
       - run: npm run check:sdk
       - name: Validate root setup script
-        run: bash -n scripts/configure-root.sh
+        run: |
+          bash -n scripts/configure-root.sh
+          shellcheck scripts/configure-root.sh
       - name: HTTP smoke test
         shell: bash
         run: |
@@ -39,5 +41,18 @@ jobs:
             echo 'CSP unexpectedly forces HTTP to HTTPS'
             exit 1
           fi
-      - name: Docker build smoke test
-        run: docker build -t azure-vps-starter:ci .
+      - name: Docker runtime smoke test
+        shell: bash
+        run: |
+          docker build -t azure-vps-starter:ci .
+          docker run -d --rm --name azure-vps-starter-ci -p 127.0.0.1:3100:3000 azure-vps-starter:ci
+          trap 'docker stop azure-vps-starter-ci >/dev/null 2>&1 || true' EXIT
+          ready=0
+          for _ in {1..20}; do
+            if curl -fsS http://127.0.0.1:3100/healthz | grep -q '"ok":true'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = "1" || { docker logs azure-vps-starter-ci; exit 1; }
