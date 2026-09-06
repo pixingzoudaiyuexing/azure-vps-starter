@@ -14,3 +14,8 @@ test("only clears operation storage after non-ambiguous create failure", () => {
   assert.ok(guardIndex >= 0, "ambiguous failure guard must exist");
   assert.ok(clearIndex > guardIndex, "token clearing must happen after the ambiguous failure early return");
 });
+
+test("treats a missing or unresolved saved operation as in progress", () => {
+  assert.match(appSource, /if \(!state\.activeOperationToken\) return false;/);
+  assert.match(appSource, /if \(state\.operationMissing \|\| !state\.currentOperation\) return true;/);
+});
