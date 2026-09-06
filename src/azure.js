@@ -104,8 +104,10 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
   };
   const rootPassword = generatePassword();
   const adminUsername = "azureadmin";
-  let resourceGroupCreated = false;
 
+  await ensureImageAvailable(clients.compute, location, image);
+
+  let resourceGroupCreated = false;
   try {
     await clients.resources.resourceGroups.createOrUpdate(names.resourceGroup, { location });
     resourceGroupCreated = true;
@@ -189,8 +191,22 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
     };
   } catch (error) {
     if (resourceGroupCreated) {
-      try { await clients.resources.resourceGroups.beginDeleteAndWait(names.resourceGroup); } catch { /* best effort rollback */ }
+      try {
+        await clients.resources.resourceGroups.beginDeleteAndWait(names.resourceGroup);
+      } catch {
+        error.cleanupWarning = `自动清理失败，请登录 Azure Portal 检查并删除资源组 ${names.resourceGroup}，避免产生额外费用。`;
+      }
     }
+    throw error;
+  }
+}
+
+async function ensureImageAvailable(compute, location, image) {
+  const versions = await compute.virtualMachineImages.list(location, image.publisher, image.offer, image.sku);
+  if (!Array.isArray(versions) || versions.length === 0) {
+    const error = new Error(`${image.label} 在 ${location} 未找到可用 Marketplace 镜像`);
+    error.code = "IMAGE_NOT_AVAILABLE";
+    error.statusCode = 409;
     throw error;
   }
 }
@@ -222,10 +238,12 @@ export function publicAzureError(error) {
   const statusCode = error?.statusCode ?? error?.response?.status ?? 502;
   let message = error?.message ?? error?.details?.error?.message ?? "Azure 请求失败";
   message = String(message).replace(/https?:\/\/[^\s]+/g, "[Azure URL]").slice(0, 1200);
+  const friendly = friendlyMessage(code, message);
+  const cleanupWarning = error?.cleanupWarning ? ` ${error.cleanupWarning}` : "";
   return {
     statusCode: Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600 ? statusCode : 502,
     code: String(code),
-    message: friendlyMessage(code, message),
+    message: `${friendly}${cleanupWarning}`,
   };
 }
 
