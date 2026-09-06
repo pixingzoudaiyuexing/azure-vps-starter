@@ -101,8 +101,10 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
     nsg: `nsg-${suffix}`,
     publicIp: `pip-${suffix}`,
     nic: `nic-${suffix}`,
+    runCommand: `configure-root-${suffix}`,
   };
   const rootPassword = generatePassword();
+  const bootstrapPassword = generatePassword();
   const adminUsername = "azureadmin";
 
   await ensureImageAvailable(clients.compute, location, image);
@@ -139,7 +141,8 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
     const publicIp = await clients.network.publicIPAddresses.beginCreateOrUpdateAndWait(names.resourceGroup, names.publicIp, {
       location,
       publicIPAllocationMethod: "Static",
-      sku: { name: "Standard" },
+      publicIPAddressVersion: "IPv4",
+      sku: { name: "Standard", tier: "Regional" },
     });
     if (!publicIp.id) throw new Error("Azure 未返回 Public IP 资源 ID");
     if (!nsg.id) throw new Error("Azure 未返回 NSG ID");
@@ -156,7 +159,6 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
     });
     if (!nic.id) throw new Error("Azure 未返回 NIC ID");
 
-    const customData = Buffer.from(rootCloudInit(rootPassword), "utf8").toString("base64");
     const poller = await clients.compute.virtualMachines.beginCreateOrUpdate(names.resourceGroup, names.vm, {
       location,
       hardwareProfile: { vmSize },
@@ -167,13 +169,14 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
       osProfile: {
         computerName: names.vm,
         adminUsername,
-        adminPassword: rootPassword,
-        customData,
+        adminPassword: bootstrapPassword,
         linuxConfiguration: { disablePasswordAuthentication: false },
       },
       networkProfile: { networkInterfaces: [{ id: nic.id, primary: true, deleteOption: "Delete" }] },
     });
     await poller.pollUntilDone();
+
+    await configureRootAccess(clients.compute, names, location, rootPassword);
 
     const freshIp = await clients.network.publicIPAddresses.get(names.resourceGroup, names.publicIp);
     if (!freshIp.ipAddress) throw new Error("VM 已创建，但暂未获得公网 IP");
@@ -201,6 +204,28 @@ export async function createVps({ credentials, location, vmSize, imageId }) {
   }
 }
 
+async function configureRootAccess(compute, names, location, rootPassword) {
+  await compute.virtualMachineRunCommands.beginCreateOrUpdateAndWait(
+    names.resourceGroup,
+    names.vm,
+    names.runCommand,
+    {
+      location,
+      source: { script: rootSetupScript() },
+      protectedParameters: [{ name: "ROOT_PASSWORD", value: rootPassword }],
+      asyncExecution: false,
+      treatFailureAsDeploymentFailure: true,
+      timeoutInSeconds: 300,
+    },
+  );
+
+  try {
+    await compute.virtualMachineRunCommands.beginDeleteAndWait(names.resourceGroup, names.vm, names.runCommand);
+  } catch {
+    console.warn(`[azure-vps-starter] root setup succeeded but managed run command cleanup failed: ${names.runCommand}`);
+  }
+}
+
 async function ensureImageAvailable(compute, location, image) {
   const versions = await compute.virtualMachineImages.list(location, image.publisher, image.offer, image.sku);
   if (!Array.isArray(versions) || versions.length === 0) {
@@ -211,8 +236,8 @@ async function ensureImageAvailable(compute, location, image) {
   }
 }
 
-function rootCloudInit(password) {
-  return `#!/bin/bash\nset -euo pipefail\necho 'root:${password}' | chpasswd\ninstall -d -m 0755 /etc/ssh/sshd_config.d\ncat >/etc/ssh/sshd_config.d/99-azure-vps-starter.conf <<'CFG'\nPermitRootLogin yes\nPasswordAuthentication yes\nCFG\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true\nfi\n`;
+function rootSetupScript() {
+  return `#!/bin/bash\nset -euo pipefail\nif [ -z "\${ROOT_PASSWORD:-}" ]; then\n  echo 'ROOT_PASSWORD is missing' >&2\n  exit 1\nfi\nprintf 'root:%s\\n' "$ROOT_PASSWORD" | chpasswd\ninstall -d -m 0755 /etc/ssh/sshd_config.d\ncat >/etc/ssh/sshd_config.d/00-azure-vps-starter.conf <<'CFG'\nPermitRootLogin yes\nPasswordAuthentication yes\nCFG\nif command -v sshd >/dev/null 2>&1; then\n  sshd -t\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null\nfi\n`;
 }
 
 function generatePassword() {
