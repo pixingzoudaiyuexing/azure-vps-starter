@@ -1,6 +1,7 @@
 const GUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const LOCATION_RE = /^[a-z0-9-]{2,40}$/i;
 const VM_SIZE_RE = /^[A-Za-z0-9_-]{2,80}$/;
+const OPERATION_TOKEN_RE = /^[0-9a-f]{64}$/i;
 
 export function requireCredentials(input) {
   const credentials = input?.credentials ?? input;
@@ -50,6 +51,13 @@ export function requireImageId(value, allowedIds) {
     throw badRequest("系统镜像参数不正确");
   }
   return value;
+}
+
+export function requireOperationToken(value) {
+  if (typeof value !== "string" || !OPERATION_TOKEN_RE.test(value)) {
+    throw badRequest("创建任务标识不正确");
+  }
+  return value.toLowerCase();
 }
 
 export function badRequest(message) {
