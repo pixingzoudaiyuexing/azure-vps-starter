@@ -17,6 +17,9 @@ async function init() {
   el("location").addEventListener("change", loadSkus);
   el("createBtn").addEventListener("click", createVps);
   el("copyBtn").addEventListener("click", copyResult);
+  for (const input of [fields.tenantId, fields.clientId, fields.clientSecret, fields.subscriptionId]) {
+    input.addEventListener("input", invalidateValidatedCredentials);
+  }
 }
 
 async function validateApi() {
@@ -128,7 +131,19 @@ function renderResult(result) {
 async function copyResult() {
   if (!state.result) return;
   const text = `IP: ${state.result.ip}\n用户: ${state.result.username}\n密码: ${state.result.password}`;
-  await navigator.clipboard.writeText(text);
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+  } else {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
   const button = el("copyBtn");
   const old = button.textContent;
   button.textContent = "已复制";
@@ -147,6 +162,19 @@ function readCredentials() {
     return null;
   }
   return credentials;
+}
+
+function invalidateValidatedCredentials() {
+  if (!state.credentials) return;
+  state.credentials = null;
+  state.locations = [];
+  state.skus = [];
+  el("apiBadge").textContent = "凭据已修改";
+  el("apiBadge").className = "badge neutral";
+  el("subscriptionInfo").textContent = "请重新检查 API";
+  fields.location.innerHTML = `<option value="">请重新验证 API</option>`;
+  fields.vmSize.innerHTML = `<option value="">先选择地区</option>`;
+  disableCreator();
 }
 
 function disableCreator() {
