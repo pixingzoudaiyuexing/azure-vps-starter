@@ -147,13 +147,16 @@ async function createVps() {
     handleOperation(data.operation);
     await pollOperation(operationToken);
   } catch (error) {
-    // A transport error can happen after the server already accepted the job.
-    // Try to recover the task using the token before declaring failure.
-    if (!error.status) {
+    // A transport or 5xx error is ambiguous: an upstream proxy may have lost the
+    // response after the server already accepted the job. Never discard the
+    // bearer token until we have positively established that no job exists.
+    if (!error.status || error.status >= 500) {
+      el("createStatus").textContent = "创建请求响应异常，但后台任务可能已经开始。正在使用任务 token 自动确认状态……";
       await sleep(1500);
       await resumeOperation(operationToken);
       return;
     }
+
     sessionStorage.removeItem(OPERATION_STORAGE_KEY);
     state.activeOperationToken = null;
     setBusy(el("createBtn"), false, "创建 VPS");
